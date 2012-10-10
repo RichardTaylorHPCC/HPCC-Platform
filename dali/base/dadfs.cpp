@@ -1039,7 +1039,14 @@ public:
 static void setUserDescriptor(Linked<IUserDescriptor> &udesc,IUserDescriptor *user)
 {
     if (!user)
+    {
+        DBGLOG("UNEXPECTED USER (NULL) in dadfs.cpp setUserDescriptor %d",__LINE__);
+#ifdef _DALIUSER_STACKTRACE
+        //following debug code to be removed
+        PrintStackReport();
+#endif
         user = queryDistributedFileDirectory().queryDefaultUser();
+    }
     udesc.set(user);
 }
 
@@ -1095,11 +1102,11 @@ static void checkLogicalScope(const char *scopename,IUserDescriptor *user,bool r
 static bool checkLogicalName(const CDfsLogicalFileName &dlfn,IUserDescriptor *user,bool readreq,bool createreq,bool allowquery,const char *specialnotallowedmsg)
 {
     bool ret = true;
-    if (dlfn.isMulti()) {
+    if (dlfn.isMulti()) { //is temporary superFile?
         if (specialnotallowedmsg)
             throw MakeStringException(-1,"cannot %s a multi file name (%s)",specialnotallowedmsg,dlfn.get());
         unsigned i = dlfn.multiOrdinality();
-        while (--i)
+        while (--i)//continue looping even when ret is false, in order to check for illegal elements (foreigns/externals), and to check each scope permission
             ret = checkLogicalName(dlfn.multiItem(i),user,readreq,createreq,allowquery,specialnotallowedmsg)&&ret;
     }
     else {
@@ -8594,7 +8601,7 @@ IFileDescriptor *CDistributedFileDirectory::getFileDescriptor(const char *lname,
     if (strcmp(tree->queryName(),queryDfsXmlBranchName(DXB_SuperFile))==0) {
         CDfsLogicalFileName dlfn;
         dlfn.set(lname);
-        Owned<CDistributedSuperFile> sfile = new CDistributedSuperFile(this,tree, dlfn, NULL);
+        Owned<CDistributedSuperFile> sfile = new CDistributedSuperFile(this,tree, dlfn, user);
         return sfile->getFileDescriptor(NULL);
     }
     if (strcmp(tree->queryName(),queryDfsXmlBranchName(DXB_File))!=0)
@@ -8615,7 +8622,7 @@ IDistributedFile *CDistributedFileDirectory::getFile(const char *lname,const INo
     if (strcmp(tree->queryName(),queryDfsXmlBranchName(DXB_SuperFile))==0) {
         CDfsLogicalFileName dlfn;
         dlfn.set(lname);
-        return new CDistributedSuperFile(this,tree, dlfn, NULL);
+        return new CDistributedSuperFile(this,tree, dlfn, user);
     }
     if (strcmp(tree->queryName(),queryDfsXmlBranchName(DXB_File))!=0)
         return NULL; // what is it?

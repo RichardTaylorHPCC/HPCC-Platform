@@ -532,7 +532,9 @@ public:
 
     virtual void recvloop()
     {
+        CCycleTimer timer;
         MemoryBuffer tempMb;
+        static cycle_t oneSec = nanosec_to_cycle(1000000000);
         try {
             ActPrintLog(activity, "Read loop start");
             CMessageBuffer recvMb;
@@ -562,8 +564,19 @@ public:
                     }
                     {
                         CriticalBlock block(putsect);
-                        while (!rowSource.eos()) 
-                            pipewr->putRow(ptrallocator.deserializeRow(allocator,rowSource));      
+                        while (!rowSource.eos())
+                        {
+                            timer.reset();
+                            const void *row = ptrallocator.deserializeRow(allocator,rowSource);
+                            cycle_t took=timer.elapsedCycles();
+                            if (took>=oneSec)
+                                DBGLOG("RECVLOOP deserializeRow blocked for : %d second(s)", (unsigned)(cycle_to_nanosec(took)/1000000000));
+                            timer.reset();
+                            pipewr->putRow(row);
+                            took=timer.elapsedCycles();
+                            if (took>=oneSec)
+                                DBGLOG("RECVLOOP pipewr->putRow blocked for : %d second(s)", (unsigned)(cycle_to_nanosec(took)/1000000000));
+                        }
                     }
                 }
                 else {
@@ -2378,6 +2391,7 @@ public:
         iCompare = helper->queryCompare();
         numHashTables = 0;
         hashTables = NULL;
+        allocFlags = queryJob().queryThorAllocator()->queryFlags();
 
         // JCSMORE - it may not be worth extracing the key,
         // if there's an upstream activity that holds onto rows for periods of time (e.g. sort)
@@ -2393,8 +2407,8 @@ public:
             if (!isVariable && helper->queryOutputMeta()->isFixedSize())
             {
                 roxiemem::IRowManager *rM = queryJob().queryRowManager();
-                size32_t keySize = rM->getExpectedCapacity(km->getMinRecordSize(), allocFlags);
-                size32_t rowSize = rM->getExpectedCapacity(helper->queryOutputMeta()->getMinRecordSize(), allocFlags);
+                memsize_t keySize = rM->getExpectedCapacity(km->getMinRecordSize(), allocFlags);
+                memsize_t rowSize = rM->getExpectedCapacity(helper->queryOutputMeta()->getMinRecordSize(), allocFlags);
                 if (keySize >= rowSize)
                     extractKey = false;
             }
@@ -2413,7 +2427,6 @@ public:
             rowKeyCompare = iCompare;
             iKeyHash = iHash;
         }
-        allocFlags = queryJob().queryThorAllocator()->queryFlags();
     }
     void start()
     {
@@ -2760,7 +2773,7 @@ unsigned CBucketHandler::getBucketEstimate(rowcount_t totalRows) const
         roxiemem::IRowManager *rM = owner.queryJob().queryRowManager();
 
         memsize_t availMem = roxiemem::getTotalMemoryLimit()-0x500000;
-        size32_t initKeySize = rM->getExpectedCapacity(keyIf->queryRowMetaData()->getMinRecordSize(), owner.allocFlags);
+        memsize_t initKeySize = rM->getExpectedCapacity(keyIf->queryRowMetaData()->getMinRecordSize(), owner.allocFlags);
         memsize_t minBucketSpace = retBuckets * rM->getExpectedCapacity(HASHDEDUP_HT_BUCKET_SIZE * sizeof(void *), owner.allocFlags);
 
         rowcount_t _maxRowGuess = (availMem-minBucketSpace) / initKeySize; // without taking into account ht space / other overheads

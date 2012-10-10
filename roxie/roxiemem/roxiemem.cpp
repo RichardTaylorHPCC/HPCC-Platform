@@ -26,6 +26,7 @@
 
 #ifdef _DEBUG
 #define _CLEAR_ALLOCATED_ROW
+//#define _CLEAR_ALLOCATED_HUGE_ROW
 #endif
 
 #ifdef _WIN32
@@ -40,7 +41,7 @@ namespace roxiemem {
 #define TIMEOUT_CHECK_FREQUENCY_MILLISECONDS 10
 
 unsigned memTraceLevel = 1;
-size32_t memTraceSizeLimit = 0;
+memsize_t memTraceSizeLimit = 0;
 
 unsigned DATA_ALIGNMENT_SIZE=0x400;
 /*------------
@@ -163,6 +164,8 @@ extern void releaseRoxieHeap()
 {
     if (heapBase)
     {
+        if (memTraceLevel)
+            DBGLOG("RoxieMemMgr: releasing heap");
         delete [] heapBitmap;
         heapBitmap = NULL;
         heapBitmapSize = 0;
@@ -546,7 +549,7 @@ class BigHeapletBase : public HeapletBase
 protected:
     BigHeapletBase *next;
     const IRowAllocatorCache *allocatorCache;
-    const unsigned chunkCapacity;
+    const memsize_t chunkCapacity;
     
     inline unsigned getActivityId(unsigned allocatorId) const
     {
@@ -554,7 +557,7 @@ protected:
     }
 
 public:
-    BigHeapletBase(const IRowAllocatorCache *_allocatorCache, unsigned _chunkCapacity) : chunkCapacity(_chunkCapacity)
+    BigHeapletBase(const IRowAllocatorCache *_allocatorCache, memsize_t _chunkCapacity) : chunkCapacity(_chunkCapacity)
     {
         next = NULL;
         allocatorCache = _allocatorCache;
@@ -562,7 +565,7 @@ public:
 
     virtual size32_t sizeInPages() = 0;
 
-    virtual size32_t _capacity() const { return chunkCapacity; }
+    virtual memsize_t _capacity() const { return chunkCapacity; }
     virtual void reportLeaks(unsigned &leaked, const IContextLogger &logctx) const = 0;
     virtual void checkHeap() const = 0;
     virtual void getPeakActivityUsage(IActivityMemoryUsageMap *map) const = 0;
@@ -1042,13 +1045,13 @@ protected:
         return PAGES(chunkCapacity + offsetof(HugeHeaplet, data), HEAP_ALIGNMENT_SIZE);
     }
 
-    inline size32_t calcCapacity(unsigned requestedSize) const
+    inline memsize_t calcCapacity(memsize_t requestedSize) const
     {
         return align_pow2(requestedSize + dataOffset(), HEAP_ALIGNMENT_SIZE) - dataOffset();
     }
 
 public:
-    HugeHeaplet(const IRowAllocatorCache *_allocatorCache, unsigned _hugeSize, unsigned _allocatorId) : BigHeapletBase(_allocatorCache, calcCapacity(_hugeSize))
+    HugeHeaplet(const IRowAllocatorCache *_allocatorCache, memsize_t _hugeSize, unsigned _allocatorId) : BigHeapletBase(_allocatorCache, calcCapacity(_hugeSize))
     {
         allocatorId = _allocatorId;
     }
@@ -1118,11 +1121,11 @@ public:
         throwUnexpected();
     }
 
-    void *allocateHuge(unsigned size)
+    void *allocateHuge(memsize_t size)
     {
         atomic_inc(&count);
         dbgassertex(size <= chunkCapacity);
-#ifdef _CLEAR_ALLOCATED_ROW
+#ifdef _CLEAR_ALLOCATED_HUGE_ROW
         memset(&data, 0xcc, chunkCapacity);
 #endif
         return &data;
@@ -1130,7 +1133,7 @@ public:
 
     virtual void reportLeaks(unsigned &leaked, const IContextLogger &logctx) const 
     {
-        logctx.CTXLOG("Block size %u was allocated by activity %u and not freed", chunkCapacity, getActivityId(allocatorId));
+        logctx.CTXLOG("Block size %"I64F"u was allocated by activity %u and not freed", (unsigned __int64) chunkCapacity, getActivityId(allocatorId));
         leaked--;
     }
 
@@ -1327,9 +1330,9 @@ public:
     }
     IMPLEMENT_IINTERFACE
 
-    virtual void *allocate(size32_t size, size32_t & capacity);
-    virtual void *resizeRow(void * original, size32_t oldsize, size32_t newsize, size32_t &capacity);
-    virtual void *finalizeRow(void *final, size32_t originalSize, size32_t finalSize);
+    virtual void *allocate(memsize_t size, memsize_t & capacity);
+    virtual void *resizeRow(void * original, memsize_t oldsize, memsize_t newsize, memsize_t &capacity);
+    virtual void *finalizeRow(void *final, memsize_t originalSize, memsize_t finalSize);
 
 protected:
     CChunkingRowManager * rowManager;       // Lifetime of rowManager is guaranteed to be longer
@@ -1415,8 +1418,8 @@ public:
                     break;
 
                 if (memTraceLevel >= 3)
-                    logctx.CTXLOG("RoxieMemMgr: CChunkingRowManager::pages() freeing Heaplet linked in active list - addr=%p pages=%u capacity=%u rowMgr=%p",
-                            finger, finger->sizeInPages(), finger->_capacity(), this);
+                    logctx.CTXLOG("RoxieMemMgr: CChunkingRowManager::pages() freeing Heaplet linked in active list - addr=%p pages=%u capacity=%"I64F"u rowMgr=%p",
+                            finger, finger->sizeInPages(), (unsigned __int64) finger->_capacity(), this);
                 if (prev)
                     setNext(prev, next);
                 else
@@ -1474,10 +1477,10 @@ public:
     {
     }
 
-    void * doAllocate(size32_t _size, unsigned allocatorId);
+    void * doAllocate(memsize_t _size, unsigned allocatorId);
 
 protected:
-    HugeHeaplet * allocateHeaplet(size32_t _size, unsigned allocatorId);
+    HugeHeaplet * allocateHeaplet(memsize_t _size, unsigned allocatorId);
 };
 
 class CNormalChunkingHeap : public CChunkingHeap
@@ -2064,11 +2067,11 @@ public:
         return ROUNDED(baseBlock + (firstFractionalHeap-frac), alignedsize);
     }
 
-    inline void beforeAllocate(unsigned _size, unsigned activityId)
+    inline void beforeAllocate(memsize_t _size, unsigned activityId)
     {
-        if (memTraceSizeLimit && _size > memTraceSizeLimit)
+        if (memTraceSizeLimit && _size >= memTraceSizeLimit)
         {
-            logctx.CTXLOG("Activity %u requesting %u bytes!", getActivityId(activityId), _size);
+            logctx.CTXLOG("Activity %u requesting %"I64F"u bytes!", getActivityId(activityId), (unsigned __int64) _size);
             PrintStackReport();
         }
         if (timeLimit)
@@ -2082,13 +2085,14 @@ public:
         }
     }
 
-    virtual void *allocate(unsigned _size, unsigned activityId)
+    virtual void *allocate(memsize_t _size, unsigned activityId)
     {
         beforeAllocate(_size, activityId);
         if (_size > FixedSizeHeaplet::maxHeapSize())
             return hugeHeap.doAllocate(_size, activityId);
+        size32_t size32 = (size32_t) _size;
 
-        size32_t rounded = roundup(_size + FixedSizeHeaplet::chunkHeaderSize);
+        size32_t rounded = roundup(size32 + FixedSizeHeaplet::chunkHeaderSize);
         size32_t whichHeap = ROUNDEDHEAP(rounded);
         CFixedChunkingHeap & normalHeap = normalHeaps.item(whichHeap);
         return normalHeap.doAllocate(activityId);
@@ -2114,11 +2118,11 @@ public:
             logctx.CTXLOG("RoxieMemMgr: CChunkingRowManager::setMemoryLimit new memlimit=%"I64F"u pageLimit=%u spillLimit=%u rowMgr=%p", (unsigned __int64) bytes, pageLimit, spillPageLimit, this);
     }
 
-    virtual void *resizeRow(void * original, size32_t oldsize, size32_t newsize, unsigned activityId, size32_t &capacity)
+    virtual void *resizeRow(void * original, memsize_t oldsize, memsize_t newsize, unsigned activityId, memsize_t &capacity)
     {
         assertex(newsize);
         assertex(!HeapletBase::isShared(original));
-        size32_t curCapacity = HeapletBase::capacity(original);
+        memsize_t curCapacity = HeapletBase::capacity(original);
         if (newsize <= curCapacity)
         {
             //resizeRow never shrinks memory
@@ -2133,7 +2137,7 @@ public:
         return ret;
     }
 
-    virtual void *finalizeRow(void * original, size32_t initialSize, size32_t finalSize, unsigned activityId)
+    virtual void *finalizeRow(void * original, memsize_t initialSize, memsize_t finalSize, unsigned activityId)
     {
         dbgassertex(finalSize);
         dbgassertex(!HeapletBase::isShared(original));
@@ -2424,34 +2428,36 @@ protected:
         callbacks.removeRowBuffer(callback);
     }
 
-    virtual size_t getExpectedCapacity(size32_t size, unsigned heapFlags)
+    virtual memsize_t getExpectedCapacity(memsize_t size, unsigned heapFlags)
     {
         if (size > FixedSizeHeaplet::maxHeapSize())
         {
-            unsigned numPages = PAGES(size + HugeHeaplet::dataOffset(), HEAP_ALIGNMENT_SIZE);
+            memsize_t numPages = PAGES(size + HugeHeaplet::dataOffset(), HEAP_ALIGNMENT_SIZE);
             return (numPages * HEAP_ALIGNMENT_SIZE) - HugeHeaplet::dataOffset();
         }
+        size32_t size32 = (size32_t) size;
 
         if (heapFlags & RHFpacked)
-            return align_pow2(size + PackedFixedSizeHeaplet::chunkHeaderSize, PACKED_ALIGNMENT) - PackedFixedSizeHeaplet::chunkHeaderSize;
+            return align_pow2(size32 + PackedFixedSizeHeaplet::chunkHeaderSize, PACKED_ALIGNMENT) - PackedFixedSizeHeaplet::chunkHeaderSize;
 
-        size32_t rounded = roundup(size + FixedSizeHeaplet::chunkHeaderSize);
+        size32_t rounded = roundup(size32 + FixedSizeHeaplet::chunkHeaderSize);
         size32_t heapSize = ROUNDEDSIZE(rounded);
         return heapSize - FixedSizeHeaplet::chunkHeaderSize;
     }
 
-    virtual size_t getExpectedFootprint(size32_t size, unsigned heapFlags)
+    virtual memsize_t getExpectedFootprint(memsize_t size, unsigned heapFlags)
     {
         if (size > FixedSizeHeaplet::maxHeapSize())
         {
-            unsigned numPages = PAGES(size + HugeHeaplet::dataOffset(), HEAP_ALIGNMENT_SIZE);
+            memsize_t numPages = PAGES(size + HugeHeaplet::dataOffset(), HEAP_ALIGNMENT_SIZE);
             return (numPages * HEAP_ALIGNMENT_SIZE);
         }
+        size32_t size32 = (size32_t) size;
 
         if (heapFlags & RHFpacked)
-            return align_pow2(size + PackedFixedSizeHeaplet::chunkHeaderSize, PACKED_ALIGNMENT);
+            return align_pow2(size32 + PackedFixedSizeHeaplet::chunkHeaderSize, PACKED_ALIGNMENT);
 
-        size32_t rounded = roundup(size + FixedSizeHeaplet::chunkHeaderSize);
+        size32_t rounded = roundup(size32 + FixedSizeHeaplet::chunkHeaderSize);
         size32_t heapSize = ROUNDEDSIZE(rounded);
         return heapSize;
     }
@@ -2488,19 +2494,19 @@ void * CRoxieDirectPackedRowHeap::allocate()
 }
 
 
-void * CRoxieVariableRowHeap::allocate(size32_t size, size32_t & capacity)
+void * CRoxieVariableRowHeap::allocate(memsize_t size, memsize_t & capacity)
 {
     void * ret = rowManager->allocate(size, allocatorId);
     capacity = RoxieRowCapacity(ret);
     return ret;
 }
 
-void * CRoxieVariableRowHeap::resizeRow(void * original, size32_t oldsize, size32_t newsize, size32_t &capacity)
+void * CRoxieVariableRowHeap::resizeRow(void * original, memsize_t oldsize, memsize_t newsize, memsize_t &capacity)
 {
     return rowManager->resizeRow(original, oldsize, newsize, allocatorId, capacity);
 }
 
-void * CRoxieVariableRowHeap::finalizeRow(void *final, size32_t originalSize, size32_t finalSize)
+void * CRoxieVariableRowHeap::finalizeRow(void *final, memsize_t originalSize, memsize_t finalSize)
 {
     //If rows never shrink then the following is sufficient.
     if (flags & RHFhasdestructor)
@@ -2511,7 +2517,7 @@ void * CRoxieVariableRowHeap::finalizeRow(void *final, size32_t originalSize, si
 //================================================================================
 
 //MORE: Make this a nested class??
-HugeHeaplet * CHugeChunkingHeap::allocateHeaplet(size32_t _size, unsigned allocatorId)
+HugeHeaplet * CHugeChunkingHeap::allocateHeaplet(memsize_t _size, unsigned allocatorId)
 {
     unsigned numPages = PAGES(_size + HugeHeaplet::dataOffset(), HEAP_ALIGNMENT_SIZE);
 
@@ -2530,15 +2536,15 @@ HugeHeaplet * CHugeChunkingHeap::allocateHeaplet(size32_t _size, unsigned alloca
     }
 }
 
-void * CHugeChunkingHeap::doAllocate(size32_t _size, unsigned allocatorId)
+void * CHugeChunkingHeap::doAllocate(memsize_t _size, unsigned allocatorId)
 {
     HugeHeaplet *head = allocateHeaplet(_size, allocatorId);
 
-    if (memTraceLevel >= 2 || _size>= 10000000)
+    if (memTraceLevel >= 2 || (memTraceSizeLimit && _size >= memTraceSizeLimit))
     {
         unsigned numPages = head->sizeInPages();
-        logctx.CTXLOG("RoxieMemMgr: CChunkingRowManager::allocate(size %u) allocated new HugeHeaplet size %u - addr=%p pages=%u pageLimit=%u peakPages=%u rowMgr=%p",
-            _size, (unsigned) (numPages*HEAP_ALIGNMENT_SIZE), head, numPages, rowManager->pageLimit, rowManager->peakPages, this);
+        logctx.CTXLOG("RoxieMemMgr: CChunkingRowManager::allocate(size %"I64F"u) allocated new HugeHeaplet size %"I64F"u - addr=%p pages=%u pageLimit=%u peakPages=%u rowMgr=%p",
+            (unsigned __int64) _size, (unsigned __int64) (numPages*HEAP_ALIGNMENT_SIZE), head, numPages, rowManager->pageLimit, rowManager->peakPages, this);
     }
 
     SpinBlock b(crit);
@@ -2692,7 +2698,7 @@ bool DataBuffer::attachToRowMgr(IRowManager *rowMgr)
     }
 }
 
-size32_t DataBuffer::_capacity() const { throwUnexpected(); }
+memsize_t DataBuffer::_capacity() const { throwUnexpected(); }
 void DataBuffer::_setDestructorFlag(const void *ptr) { throwUnexpected(); }
 
 class CDataBufferManager : public CInterface, implements IDataBufferManager
@@ -2938,7 +2944,7 @@ bool DataBufferBottom::_isShared(const void *ptr) const
         return base->_isShared(ptr);
 }
 
-size32_t DataBufferBottom::_capacity() const { throwUnexpected(); }
+memsize_t DataBufferBottom::_capacity() const { throwUnexpected(); }
 void DataBufferBottom::_setDestructorFlag(const void *ptr) { throwUnexpected(); }
 
 //================================================================================
@@ -3141,6 +3147,7 @@ public:
 class RoxieMemTests : public CppUnit::TestFixture  
 {
     CPPUNIT_TEST_SUITE( RoxieMemTests );
+        CPPUNIT_TEST(testSetup);
         CPPUNIT_TEST(testRoundup);
         CPPUNIT_TEST(testBitmapThreading);
         CPPUNIT_TEST(testAllocSize);
@@ -3152,21 +3159,30 @@ class RoxieMemTests : public CppUnit::TestFixture
         CPPUNIT_TEST(testDatamanagerThreading);
         CPPUNIT_TEST(testCallbacks);
         CPPUNIT_TEST(testRecursiveCallbacks);
+        CPPUNIT_TEST(testCleanup);
     CPPUNIT_TEST_SUITE_END();
     const IContextLogger &logctx;
 
 public:
     RoxieMemTests() : logctx(queryDummyContextLogger())
     {
-        initializeHeap(300, 0, NULL);
     }
 
     ~RoxieMemTests()
     {
-        releaseRoxieHeap();
     }
 
 protected:
+    void testSetup()
+    {
+        initializeHeap(300, 0, NULL);
+    }
+
+    void testCleanup()
+    {
+        releaseRoxieHeap();
+    }
+
     static int mc4(const void *x, const void *y)
     {
         return -memcmp(x, y, sizeof(void*));
@@ -4164,23 +4180,33 @@ const memsize_t memorySize = 0x60000000;
 class RoxieMemStressTests : public CppUnit::TestFixture
 {
     CPPUNIT_TEST_SUITE( RoxieMemStressTests );
+    CPPUNIT_TEST(testSetup);
     CPPUNIT_TEST(testFragmenting);
     CPPUNIT_TEST(testSequential);
+    CPPUNIT_TEST(testCleanup);
     CPPUNIT_TEST_SUITE_END();
     const IContextLogger &logctx;
 
 public:
     RoxieMemStressTests() : logctx(queryDummyContextLogger())
     {
-        setTotalMemoryLimit(memorySize, 0, NULL);
     }
 
     ~RoxieMemStressTests()
     {
-        releaseRoxieHeap();
     }
 
 protected:
+    void testSetup()
+    {
+        setTotalMemoryLimit(memorySize, 0, NULL);
+    }
+
+    void testCleanup()
+    {
+        releaseRoxieHeap();
+    }
+
     void testSequential()
     {
         unsigned requestSize = 20;
@@ -4232,10 +4258,68 @@ protected:
     }
 };
 
+const memsize_t hugeMemorySize = 0x110000000;
+const memsize_t hugeAllocSize = 0x100000001;
+// const memsize_t initialAllocSize = hugeAllocSize/2; // need to support expand block for that to fit
+const memsize_t initialAllocSize = 0x100;
+
+class RoxieMemHugeTests : public CppUnit::TestFixture
+{
+    CPPUNIT_TEST_SUITE( RoxieMemHugeTests );
+    CPPUNIT_TEST(testSetup);
+    CPPUNIT_TEST(testHuge);
+    CPPUNIT_TEST(testCleanup);
+    CPPUNIT_TEST_SUITE_END();
+    const IContextLogger &logctx;
+
+public:
+    RoxieMemHugeTests() : logctx(queryDummyContextLogger())
+    {
+    }
+
+    ~RoxieMemHugeTests()
+    {
+    }
+
+protected:
+    void testSetup()
+    {
+        setTotalMemoryLimit(hugeMemorySize, 0, NULL);
+    }
+
+    void testCleanup()
+    {
+        releaseRoxieHeap();
+    }
+
+    void testHuge()
+    {
+        Owned<IRowManager> rowManager = createRowManager(0, NULL, logctx, NULL);
+        void * huge = rowManager->allocate(hugeAllocSize, 1);
+        ASSERT(rowManager->numPagesAfterCleanup(true)==4097);
+        ReleaseRoxieRow(huge);
+        ASSERT(rowManager->numPagesAfterCleanup(true)==0);
+        memsize_t capacity;
+        void *huge1 = rowManager->allocate(initialAllocSize, 1);
+        void *huge2 = rowManager->resizeRow(huge1, initialAllocSize, hugeAllocSize, 1, capacity);
+        ASSERT(capacity > hugeAllocSize);
+        ASSERT(rowManager->numPagesAfterCleanup(true)==4097);
+        ReleaseRoxieRow(huge2);
+        ASSERT(rowManager->numPagesAfterCleanup(true)==0);
+
+        ASSERT(rowManager->getExpectedCapacity(hugeAllocSize, RHFnone) > hugeAllocSize);
+        ASSERT(rowManager->getExpectedFootprint(hugeAllocSize, RHFnone) > hugeAllocSize);
+        ASSERT(true);
+    }
+};
+
 CPPUNIT_TEST_SUITE_REGISTRATION( RoxieMemTests );
 CPPUNIT_TEST_SUITE_NAMED_REGISTRATION( RoxieMemTests, "RoxieMemTests" );
 CPPUNIT_TEST_SUITE_REGISTRATION( RoxieMemStressTests );
 CPPUNIT_TEST_SUITE_NAMED_REGISTRATION( RoxieMemStressTests, "RoxieMemStressTests" );
-
+#ifdef __64BIT__
+//CPPUNIT_TEST_SUITE_REGISTRATION( RoxieMemHugeTests );
+CPPUNIT_TEST_SUITE_NAMED_REGISTRATION( RoxieMemHugeTests, "RoxieMemHugeTests" );
+#endif
 } // namespace roxiemem
 #endif
